@@ -11,35 +11,55 @@ script plus the README.
 ## Running / validating changes
 
 There is no build, lint, or test tooling in this repo. Validate changes by
-running the script directly against a repo (itself, or any other checked-out
-project) and inspecting the generated report:
+running the relevant script directly against a repo (itself, or any other
+checked-out project) and inspecting the generated report:
 
 ```bash
-./repo-audit.sh                # audits the current directory, writes dependency-audit.txt
-./repo-audit.sh /path/to/repo report.txt   # custom target + output file
-bash -n repo-audit.sh           # syntax-check the script after edits
+./repo-audit.sh                         # audits cwd, writes dependency-audit.txt
+./repo-audit.sh /path/to/repo report.txt
+
+./audit-cloud-sdk.sh   [path] [basename]  # writes <basename>.txt + .json
+./audit-iac-lockin.sh  [path] [basename]
+./audit-saas.sh        [path] [basename]
+./audit-licenses.sh    [path] [basename]  # uses `syft` for SBOM data if installed
+
+bash -n <script>.sh                     # syntax-check after edits
 ```
 
-`*.txt` report files are gitignored — don't commit generated reports.
+`*.txt` and `*-audit.json` report files are gitignored — don't commit
+generated reports.
 
 ## Structure and conventions
 
-- `section()` prints a banner and appends to the report via `tee -a`.
-- `run_scan(title, pattern, [paths...])` is the core building block: it
-  wraps `grep -RInI` with standard excludes (`.git`, `node_modules`, `venv`,
-  `.venv`, `dist`, `build`) and prints "No matches found." if the grep finds
-  nothing — this fallback matters because the script uses `set -uo pipefail`
-  without `-e`, so scans must not fail the whole run on no-match (grep exits
-  non-zero on no matches).
-- Each audit category (manifests, Docker base images, external URLs, cloud
-  vendor references, licensing terms, CI dependencies, install commands,
-  private package sources) is its own `run_scan`/`section` block appended in
-  sequence to the same report file — when adding a new audit category,
-  follow this same pattern rather than introducing a different mechanism.
-- Patterns are single quoted extended-regex alternations (`grep -E` style,
-  passed as the whole `-I` pattern argument); keep new patterns
-  case-consistent with the category (e.g. vendor names lowercase since
-  `grep` here is not `-i`).
-- The script ends with a fixed "Summary" checklist (classification +
-  vendor-lock-in questions) — this is intentionally static output, not
-  generated from scan results.
+- `repo-audit.sh` is self-contained (its own `section()`/`run_scan()`
+  inline) and predates the shared library — leave it as-is unless directly
+  changing it.
+- The four `audit-*.sh` scripts source `lib/scan-common.sh`, which provides:
+  - `scan_init TITLE ROOT TXT JSON` — resets/opens the report files and
+    prints the header.
+  - `scan_run TITLE PATTERN [grep-args...]` — greps with standard excludes
+    (`.git`, `node_modules`, `venv`, `.venv`, `dist`, `build`), appends
+    matches (or "No matches found.") to the text report, and appends a
+    matching JSON section (skipped if `jq` isn't installed) to a temp JSONL
+    file.
+  - `scan_add_json_section JSON_STRING` — for injecting a custom JSON
+    section (e.g. `audit-licenses.sh`'s `syft`-derived data) instead of one
+    produced by `scan_run`.
+  - `scan_finalize` — assembles the final `{title, repository,
+    generated_at, sections: [...]}` JSON report from the temp JSONL file.
+- All new audit scripts follow the same CLI shape: `[path-to-repo]
+  [report-basename]`, writing `<basename>.txt` and `<basename>.json`. When
+  adding a new audit category, add a `scan_run` call to the relevant script
+  (or a new script following this same shape) rather than introducing a
+  different mechanism.
+- Each `audit-*.sh` script resolves its own real path with `readlink -f
+  "${BASH_SOURCE[0]}"` before computing `SCRIPT_DIR` (needed to find
+  `lib/scan-common.sh`) — this must be preserved so the scripts keep working
+  when symlinked onto `PATH` via `add-to-path.sh`.
+- Patterns are single-quoted extended-regex (`grep -E`) alternations; keep
+  new patterns case-consistent with the category (vendor names lowercase,
+  since matching is case-sensitive unless a pattern explicitly adds
+  character classes for case).
+- `repo-audit.sh`'s summary checklist and the license/SBOM logic in
+  `audit-licenses.sh` are intentionally static/fixed content, not generated
+  from scan results.
